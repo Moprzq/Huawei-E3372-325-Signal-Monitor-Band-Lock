@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Huawei E3372-325 LTE Signal Monitor & Band Lock",
+  "version": "1.0.0",
+  "description": "Monitor LTE signal, serving cells, Internet stability and manage LTE band locking on Huawei E3372-325 HiLink modems.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Huawei LTE Panel",
+    "default_popup": "popup.html"
+  }
+}

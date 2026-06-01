@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Huawei LTE Panel</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Huawei LTE Panel</h1>
+      <p id="subtitle">background monitor</p>
+    </div>
+    <button id="refreshBtn" title="Refresh now">↻</button>
+  </header>
+
+  <nav>
+    <button class="tab active" data-tab="status">Status</button>
+    <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="settings">Band lock</button>
+    <button class="tab" data-tab="about">Help</button>
+  </nav>
+
+  <main>
+    <section id="status" class="tabPage active">
+      <div class="card">
+        <h2>Serving cell</h2>
+        <div id="cellBadge" class="badge muted">loading...</div>
+        <div id="servingCell"></div>
+        <p class="hint">This is the current serving LTE cell. It is not automatically “good” or “bad”. Use drops, SINR and your own observations.</p>
+      </div>
+
+      <div class="grid">
+        <div class="card"><h2>Radio</h2><div id="radio"></div></div>
+        <div class="card"><h2>Signal</h2><div id="signal"></div></div>
+        <div class="card"><h2>Checks</h2><div id="checks"></div></div>
+      </div>
+
+      <div class="card"><h2>Band configuration</h2><div id="netMode"></div><p id="backupWarning" class="hint"></p></div>
+      <div class="card"><h2>Recommendation</h2><div id="recommendation"></div></div>
+      <p id="message" class="hint"></p>
+    </section>
+
+    <section id="history" class="tabPage">
+      <div class="card"><h2>SINR history</h2><canvas id="sinrChart" width="760" height="220"></canvas></div>
+      <div class="grid">
+        <div class="card"><h2>Since popup opened</h2><div id="viewStats"></div></div>
+        <div class="card"><h2>All history since clear</h2><div id="allStats"></div></div>
+        <div class="card">
+          <h2>Export</h2>
+          <div class="actions">
+            <button id="exportBtn">Export logs</button>
+            <button id="clearBtn" class="secondary">Clear history</button>
+          </div>
+          <p class="hint">Background collector stores long-term history in IndexedDB while browser is running.</p>
+        </div>
+      </div>
+      <div class="card"><h2>Events</h2><pre id="events">no events</pre></div>
+    </section>
+
+    <section id="settings" class="tabPage">
+      <div class="card">
+        <h2>Multi-band lock</h2>
+        <div id="bandCheckboxes" class="bands"></div>
+        <div class="actions">
+          <button id="lockSelectedBtn">Lock selected bands</button>
+          <button id="quickB7Btn" class="secondary">Quick: B7 only</button>
+          <button id="quickB3B7Btn" class="secondary">Quick: B3+B7</button>
+        </div>
+        <p class="hint">Example: B3+B7 = 0x4 OR 0x40 = 0x44, so Huawei LTEBand becomes <b>44</b>.</p>
+        <p id="maskPreview" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Restore</h2>
+        <div class="actions">
+          <button id="restoreStartupBtn" class="secondary">Restore startup band</button>
+          <button id="restoreDefaultBtn" class="danger">Restore default band</button>
+        </div>
+        <p class="hint">
+          Startup band = what the extension saw when it started.<br>
+          Default band = mask from net-mode-backup.xml: a0080800c5.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>Connection settings</h2>
+        <label class="fieldLabel">Modem API URL</label>
+        <input id="modemUrl" value="http://192.168.8.1" />
+        <label class="fieldLabel">Router URL / IP</label>
+        <input id="routerUrl" value="http://192.168.1.1" />
+        <label class="fieldLabel">Internet check URL</label>
+        <input id="internetCheckUrl" value="https://cloudflare-dns.com/dns-query" />
+        <div class="actions">
+          <button id="saveUrlBtn" class="secondary">Save settings</button>
+        </div>
+        <p class="hint">Router check is HTTP/fetch availability, not ICMP ping.</p>
+      </div>
+    </section>
+
+    <section id="about" class="tabPage">
+      <div class="card">
+        <h2>What this extension does</h2>
+        <p class="hint">It reads Huawei HiLink API from your modem, stores long-term history in IndexedDB, and can change LTE band masks.</p>
+        <div class="helpList">
+          <div><b>Serving cell</b> — current LTE cell: Band / PCI / eNodeB / EARFCN.</div>
+          <div><b>Current bands</b> — bands currently allowed by modem configuration.</div>
+          <div><b>Startup band</b> — configuration captured when the extension first saw the modem.</div>
+          <div><b>Default band</b> — built-in factory/default mask from net-mode-backup.xml: <code>a0080800c5</code>.</div>
+          <div><b>Internet drops</b> — moments when internet check failed while the extension was collecting data.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Safety notes</h2>
+        <p class="hint">Changing bands can temporarily disconnect the modem. If the modem disappears, unplug/replug it and use Restore default band.</p>
+        <p class="hint">For B3+B7 the mask is <code>44</code>. For B7 only the mask is <code>40</code>.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
