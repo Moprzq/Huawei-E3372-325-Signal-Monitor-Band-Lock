@@ -9,19 +9,27 @@ const BAND_MASKS = {
 };
 
 const DB_NAME = "huawei_lte_panel";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const MAX_HISTORY_POINTS_FOR_UI = 2000;
 const MAX_EVENTS_FOR_UI = 500;
+const MAX_CELL_SAMPLE_GAP_SECONDS = 300;
+const WATCHDOG_STALE_MS = 60 * 1000;
+const COLLECT_ALARM = "collect";
 
 let state = {
   modem: DEFAULT_MODEM,
   router: DEFAULT_ROUTER,
   internetCheck: DEFAULT_INTERNET_CHECK,
+  monitoringEnabled: true,
+  lastSuccessfulSampleTs: null,
+  lastWatchdogRestartTs: null,
   backup: null,
   lastCell: null,
+  lastCellIdentity: null,
+  lastSampleTs: null,
   lastInternetOK: null,
   startedAt: Date.now(),
-  stats: { bandChanges: 0, cellChanges: 0, internetDrops: 0, samples: 0 },
+  stats: { bandChanges: 0, cellChanges: 0, pciChanges: 0, enodebChanges: 0, earfcnChanges: 0, invalidSamples: 0, internetDrops: 0, watchdogRestarts: 0, samples: 0 },
   lastSnapshot: null,
   lastError: null
 };
@@ -44,6 +52,11 @@ function openDB() {
         const e = db.createObjectStore("events", { keyPath: "id", autoIncrement: true });
         e.createIndex("ts", "ts");
         e.createIndex("kind", "kind");
+      }
+      if (!db.objectStoreNames.contains("cellStats")) {
+        const c = db.createObjectStore("cellStats", { keyPath: "cell" });
+        c.createIndex("lastSeen", "lastSeen");
+        c.createIndex("timeSeconds", "timeSeconds");
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -82,12 +95,43 @@ async function dbGetRecent(storeName, limit) {
   });
 }
 
+async function dbGetAll(storeName) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => { db.close(); resolve(req.result || []); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function dbGet(storeName, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const req = tx.objectStore(storeName).get(key);
+    req.onsuccess = () => { db.close(); resolve(req.result || null); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function dbPut(storeName, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).put(value);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 async function dbClearAll() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(["samples", "events"], "readwrite");
+    const tx = db.transaction(["samples", "events", "cellStats"], "readwrite");
     tx.objectStore("samples").clear();
     tx.objectStore("events").clear();
+    tx.objectStore("cellStats").clear();
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
   });
@@ -96,7 +140,23 @@ async function dbClearAll() {
 async function dbExportAll() {
   const samples = await dbGetRecent("samples", 1000000);
   const events = await dbGetRecent("events", 1000000);
-  return { samples, events };
+  const cellStatistics = await getCellStatistics();
+  return {
+    samples,
+    events,
+    cellStatistics,
+    eventCounters: { ...state.stats },
+    monitoringState: {
+      enabled: state.monitoringEnabled !== false,
+      status: monitoringStatus(),
+      lastSuccessfulSampleTs: state.lastSuccessfulSampleTs || null
+    },
+    watchdog: {
+      staleAfterMs: WATCHDOG_STALE_MS,
+      restarts: state.stats?.watchdogRestarts || 0,
+      lastRestartTs: state.lastWatchdogRestartTs || null
+    }
+  };
 }
 
 async function addEvent(kind, msg) {
@@ -104,17 +164,40 @@ async function addEvent(kind, msg) {
   await dbAdd("events", ev);
 }
 
+function ensureCollectAlarm() {
+  chrome.alarms.create(COLLECT_ALARM, { periodInMinutes: 0.5 });
+}
+
+function monitoringStatus() {
+  if (!state.monitoringEnabled) return "Disabled";
+  return "Active";
+}
+
+function defaultStats() {
+  return { bandChanges: 0, cellChanges: 0, pciChanges: 0, enodebChanges: 0, earfcnChanges: 0, invalidSamples: 0, internetDrops: 0, watchdogRestarts: 0, samples: 0 };
+}
+
 async function load() {
-  const data = await chrome.storage.local.get(["lteState", "modemUrl", "routerUrl", "internetCheckUrl"]);
+  const data = await chrome.storage.local.get(["lteState", "monitoringEnabled", "modemUrl", "routerUrl", "internetCheckUrl"]);
   if (data.lteState) state = { ...state, ...data.lteState };
+  state.stats = { ...defaultStats(), ...(state.stats || {}) };
+  state.monitoringEnabled = data.monitoringEnabled !== undefined ? data.monitoringEnabled !== false : state.monitoringEnabled !== false;
+  delete state.monitoringPaused;
+  delete state.autoPauseUnavailable;
+  delete state.modemUnavailableSince;
   if (data.modemUrl) state.modem = data.modemUrl;
   if (data.routerUrl) state.router = data.routerUrl;
   if (data.internetCheckUrl) state.internetCheck = data.internetCheckUrl;
 }
 
 async function save() {
+  const persistedState = { ...state };
+  delete persistedState.monitoringEnabled;
+  delete persistedState.monitoringPaused;
+  delete persistedState.autoPauseUnavailable;
+  delete persistedState.modemUnavailableSince;
   await chrome.storage.local.set({
-    lteState: state,
+    lteState: persistedState,
     modemUrl: state.modem,
     routerUrl: state.router,
     internetCheckUrl: state.internetCheck
@@ -154,11 +237,157 @@ function num(x) {
   const m = String(x || "").match(/-?\d+(\.\d+)?/);
   return m ? Number(m[0]) : NaN;
 }
+function normalizeBand(x) {
+  return String(x || "").trim().replace(/^B/i, "");
+}
+function isValidBand(x) {
+  const band = normalizeBand(x);
+  return !!band && !!BAND_MASKS["B" + band];
+}
 function cellKey(s) {
-  return `B${s.band}/${s.pci}/${s.enodeb_id}/${s.earfcn}`;
+  return `B${normalizeBand(s.band)}/${s.pci}/${s.enodeb_id}/${s.earfcn}`;
 }
 function cellStatus(s) {
   return [`B${s.band || "—"} / PCI ${s.pci || "—"} / eNodeB ${s.enodeb_id || "—"}`, "muted"];
+}
+function parseCellKey(key) {
+  const parts = String(key || "").split("/");
+  if (parts.length < 3) return null;
+  return {
+    band: normalizeBand(parts[0]),
+    pci: parts[1] || "",
+    enodeb_id: parts[2] || "",
+    earfcn: parts.slice(3).join("/") || ""
+  };
+}
+function signalCell(signal) {
+  return {
+    band: normalizeBand(signal.band),
+    pci: String(signal.pci || "").trim(),
+    enodeb_id: normENB(signal.enodeb_id),
+    earfcn: String(signal.earfcn || "").trim()
+  };
+}
+function parseEarfcn(earfcn) {
+  const text = String(earfcn || "");
+  return {
+    dl: (text.match(/\bDL\s*:\s*([^\s]+)/i) || [])[1] || "",
+    ul: (text.match(/\bUL\s*:\s*([^\s]+)/i) || [])[1] || ""
+  };
+}
+function formatEarfcn(earfcn) {
+  const parsed = parseEarfcn(earfcn);
+  if (parsed.dl || parsed.ul) return `DL:${parsed.dl || "—"} UL:${parsed.ul || "—"}`;
+  return String(earfcn || "—");
+}
+function formatEarfcnChange(oldCell, newCell) {
+  const oldEarfcn = parseEarfcn(oldCell.earfcn);
+  const newEarfcn = parseEarfcn(newCell.earfcn);
+  const lines = [
+    "EARFCN CHANGE:",
+    `B${newCell.band} / PCI ${newCell.pci || "—"} / eNodeB ${newCell.enodeb_id || "—"}`
+  ];
+
+  if (oldEarfcn.dl || newEarfcn.dl) lines.push(`DL:${oldEarfcn.dl || "—"} -> DL:${newEarfcn.dl || "—"}`);
+  if (oldEarfcn.ul || newEarfcn.ul) lines.push(`UL:${oldEarfcn.ul || "—"} -> UL:${newEarfcn.ul || "—"}`);
+  if (lines.length === 2) lines.push(`${oldCell.earfcn || "—"} -> ${newCell.earfcn || "—"}`);
+
+  return lines.join("\n");
+}
+function formatPciChange(oldCell, newCell) {
+  return `PCI CHANGE: B${newCell.band} eNB${newCell.enodeb_id || "—"} PCI${oldCell.pci || "—"} -> PCI${newCell.pci || "—"}`;
+}
+function formatEnodebChange(oldCell, newCell) {
+  return `ENODEB CHANGE: B${newCell.band} PCI${newCell.pci || "—"} eNB${oldCell.enodeb_id || "—"} -> B${newCell.band} PCI${newCell.pci || "—"} eNB${newCell.enodeb_id || "—"}`;
+}
+function formatCellChange(oldCell, newCell) {
+  return [
+    "CELL CHANGE:",
+    `B${oldCell.band}/${oldCell.pci}/${oldCell.enodeb_id}/${oldCell.earfcn || "—"} -> B${newCell.band}/${newCell.pci}/${newCell.enodeb_id}/${newCell.earfcn || "—"}`
+  ].join("\n");
+}
+function invalidCellReasons(cell) {
+  const reasons = [];
+  if (!cell || !isValidBand(cell.band)) reasons.push("empty band");
+  if (!cell?.pci) reasons.push("missing PCI");
+  if (!cell?.enodeb_id || cell.enodeb_id === "0") reasons.push("missing eNodeB");
+  if (!cell?.earfcn) reasons.push("missing EARFCN");
+  return reasons;
+}
+function cellIdentity(cell) {
+  if (invalidCellReasons(cell).length) return "";
+  return "B" + normalizeBand(cell.band) + "/" + cell.pci + "/" + cell.enodeb_id;
+}
+function cellIdentityFromKey(key) {
+  return cellIdentity(parseCellKey(key));
+}
+function emptyCellStat(cell, ts) {
+  const parsed = parseCellKey(cell);
+  return {
+    cell,
+    band: parsed?.band || "",
+    pci: parsed?.pci || "",
+    enodeb: parsed?.enodeb_id || "",
+    timeSeconds: 0,
+    sinrSum: 0,
+    sinrCount: 0,
+    rsrpSum: 0,
+    rsrpCount: 0,
+    rsrqSum: 0,
+    rsrqCount: 0,
+    drops: 0,
+    selections: 0,
+    lastSeen: ts || Date.now()
+  };
+}
+function addMetric(stat, name, value) {
+  if (!Number.isFinite(value)) return;
+  stat[name + "Sum"] = (stat[name + "Sum"] || 0) + value;
+  stat[name + "Count"] = (stat[name + "Count"] || 0) + 1;
+}
+function statForExport(stat) {
+  const avg = name => stat[name + "Count"] ? stat[name + "Sum"] / stat[name + "Count"] : null;
+  return {
+    cell: stat.cell,
+    band: stat.band,
+    pci: stat.pci,
+    enodeb: stat.enodeb,
+    timeSeconds: Math.round(stat.timeSeconds || 0),
+    avgSinr: avg("sinr"),
+    avgRsrp: avg("rsrp"),
+    avgRsrq: avg("rsrq"),
+    drops: stat.drops || 0,
+    selections: stat.selections || 0,
+    lastSeen: stat.lastSeen || null
+  };
+}
+async function getRawCellStat(cell, ts) {
+  return (await dbGet("cellStats", cell)) || emptyCellStat(cell, ts);
+}
+async function addCellDuration(cell, seconds) {
+  if (!cell || !Number.isFinite(seconds) || seconds <= 0) return;
+  const stat = await getRawCellStat(cell);
+  stat.timeSeconds = (stat.timeSeconds || 0) + seconds;
+  await dbPut("cellStats", stat);
+}
+async function recordCellSample(cell, signal, ts, selected) {
+  const stat = await getRawCellStat(cell, ts);
+  addMetric(stat, "sinr", num(signal.sinr));
+  addMetric(stat, "rsrp", num(signal.rsrp));
+  addMetric(stat, "rsrq", num(signal.rsrq));
+  if (selected) stat.selections = (stat.selections || 0) + 1;
+  stat.lastSeen = ts;
+  await dbPut("cellStats", stat);
+}
+async function recordCellDrop(cell) {
+  if (!cell) return;
+  const stat = await getRawCellStat(cell);
+  stat.drops = (stat.drops || 0) + 1;
+  await dbPut("cellStats", stat);
+}
+async function getCellStatistics() {
+  const stats = await dbGetAll("cellStats");
+  return stats.map(statForExport).sort((a, b) => (b.timeSeconds || 0) - (a.timeSeconds || 0));
 }
 
 function maskForBands(bands) {
@@ -230,64 +459,157 @@ async function checkURL(url, timeoutMs = 2500) {
 }
 async function pingInternet() { return checkURL(state.internetCheck || DEFAULT_INTERNET_CHECK, 2500); }
 async function checkRouter() { return checkURL(state.router || DEFAULT_ROUTER, 2500); }
+async function restartMonitoringByWatchdog(ts) {
+  if (state.lastWatchdogRestartTs && ts - state.lastWatchdogRestartTs < WATCHDOG_STALE_MS) return;
+  state.stats.watchdogRestarts++;
+  state.lastWatchdogRestartTs = ts;
+  chrome.alarms.clear(COLLECT_ALARM, ensureCollectAlarm);
+  await addEvent("info", "Monitoring restarted by watchdog");
+}
+async function handleCollectFailure(ts, message) {
+  state.lastError = message;
+  await addEvent("error", message);
+}
+async function monitorTick() {
+  if (!state.monitoringEnabled) return;
+  const ts = Date.now();
+  const watchdogBase = state.lastSuccessfulSampleTs || state.startedAt;
+  const modemKnownUnavailable = state.lastSnapshot?.modemApiOK === false;
+  if (!modemKnownUnavailable && watchdogBase && ts - watchdogBase > WATCHDOG_STALE_MS) {
+    await restartMonitoringByWatchdog(ts);
+  }
+  await collect();
+}
 
 async function collect() {
+  if (!state.monitoringEnabled) return;
+
+  const ts = Date.now();
+  const internetOK = await pingInternet();
+
+  let signal, netMode, info;
   try {
-    const [signal, netMode, info, internetOK, routerOK] = await Promise.all([
-      getSignal(), getNetMode(), getInfo(), pingInternet(), checkRouter()
-    ]);
-
-    if (!state.backup && netMode.LTEBand) {
-      state.backup = { ...netMode };
-      await addEvent("info", `Startup band captured: LTEBand=${netMode.LTEBand}`);
-    }
-
-    const ck = cellKey(signal);
-    if (state.lastCell && state.lastCell !== ck) {
-      const oldBand = (state.lastCell.match(/^B([^/]+)/) || [])[1];
-      if (oldBand && oldBand !== signal.band) {
-        state.stats.bandChanges++;
-        await addEvent("warn", `BAND CHANGE: B${oldBand} -> B${signal.band}`);
-      }
-      state.stats.cellChanges++;
-      await addEvent("warn", `CELL CHANGE: ${state.lastCell} -> ${ck}`);
-    }
-    state.lastCell = ck;
-
-    if (state.lastInternetOK !== null && state.lastInternetOK && !internetOK) {
-      state.stats.internetDrops++;
-      await addEvent("bad", `INTERNET DROP while cell=${ck}`);
-    }
-    if (state.lastInternetOK !== null && !state.lastInternetOK && internetOK) {
-      await addEvent("good", `INTERNET RECOVERED while cell=${ck}`);
-    }
-    state.lastInternetOK = internetOK;
-
-    const [cellLabel, cellClass] = cellStatus(signal);
-    state.lastSnapshot = { signal, netMode, info, internetOK, routerOK, cellLabel, cellClass, ts: Date.now(), enabledBands: bandsFromMask(netMode.LTEBand) };
-
-    await dbAdd("samples", {
-      ts: Date.now(),
-      sinr: num(signal.sinr),
-      rsrp: num(signal.rsrp),
-      rsrq: num(signal.rsrq),
-      rssi: num(signal.rssi),
-      band: signal.band,
-      pci: signal.pci,
-      enodeb: signal.enodeb_id,
-      earfcn: signal.earfcn,
-      cell: ck,
-      internetOK,
-      routerOK
-    });
-
-    state.stats.samples++;
-    state.lastError = null;
+    [signal, netMode, info] = await Promise.all([getSignal(), getNetMode(), getInfo()]);
   } catch (e) {
-    state.lastError = e.message;
-    await addEvent("error", e.message);
+    const shouldLogError = state.lastSnapshot?.modemApiOK !== false || state.lastError !== e.message;
+    state.lastInternetOK = internetOK;
+    state.lastSnapshot = {
+      signal: {},
+      netMode: {},
+      info: {},
+      internetOK,
+      routerOK: null,
+      modemApiOK: false,
+      modemError: e.message,
+      cellLabel: "Modem unavailable",
+      cellClass: "bad",
+      ts,
+      enabledBands: []
+    };
+    state.lastError = null;
+    if (shouldLogError) await addEvent("info", "Modem API unavailable: " + e.message);
+    await save();
+    return;
   }
 
+  const routerOK = await checkRouter();
+
+  if (!state.backup && netMode.LTEBand) {
+    state.backup = { ...netMode };
+    await addEvent("info", "Startup band captured: LTEBand=" + netMode.LTEBand);
+  }
+
+  const ck = cellKey(signal);
+  const currentCell = signalCell(signal);
+  const currentIdentity = cellIdentity(currentCell);
+  if (!currentIdentity) {
+    state.stats.invalidSamples++;
+    state.lastSampleTs = null;
+    const reasons = invalidCellReasons(currentCell).join(", ") || "incomplete LTE identity";
+    await addEvent("debug", "INVALID MODEM SAMPLE: " + reasons);
+  } else {
+    state.lastSuccessfulSampleTs = ts;
+    const previousIdentity = state.lastCellIdentity || cellIdentityFromKey(state.lastCell);
+    if (state.lastSampleTs && previousIdentity) {
+      const sampleGapSeconds = Math.max(0, (ts - state.lastSampleTs) / 1000);
+      if (sampleGapSeconds <= MAX_CELL_SAMPLE_GAP_SECONDS) {
+        await addCellDuration(previousIdentity, sampleGapSeconds);
+      }
+    }
+
+    const selected = !previousIdentity || previousIdentity !== currentIdentity;
+    await recordCellSample(currentIdentity, signal, ts, selected);
+
+    const previousCell = parseCellKey(state.lastCell);
+    if (previousCell && state.lastCell !== ck) {
+      const previousReasons = invalidCellReasons(previousCell);
+      if (previousReasons.length) {
+        state.stats.invalidSamples++;
+        await addEvent("debug", "INVALID MODEM SAMPLE: " + previousReasons.join(", "));
+      } else {
+        const bandChanged = previousCell.band !== currentCell.band;
+        const pciChanged = previousCell.pci !== currentCell.pci;
+        const enodebChanged = previousCell.enodeb_id !== currentCell.enodeb_id;
+        const earfcnChanged = previousCell.earfcn !== currentCell.earfcn;
+        const realCellChanged = bandChanged || pciChanged || enodebChanged;
+
+        if (realCellChanged) {
+          if (pciChanged || enodebChanged) state.stats.cellChanges++;
+          if (bandChanged) {
+            state.stats.bandChanges++;
+            await addEvent("warn", "BAND CHANGE: B" + previousCell.band + " -> B" + currentCell.band);
+          }
+          if (enodebChanged) {
+            state.stats.enodebChanges++;
+            await addEvent("warn", formatEnodebChange(previousCell, currentCell));
+          } else if (pciChanged) {
+            state.stats.pciChanges++;
+            await addEvent("warn", formatPciChange(previousCell, currentCell));
+          } else if (!bandChanged) {
+            await addEvent("warn", formatCellChange(previousCell, currentCell));
+          }
+        } else if (earfcnChanged) {
+          state.stats.earfcnChanges++;
+          await addEvent("info", formatEarfcnChange(previousCell, currentCell));
+        }
+      }
+    }
+    state.lastCell = ck;
+    state.lastCellIdentity = currentIdentity;
+    state.lastSampleTs = ts;
+  }
+
+  if (currentIdentity && state.lastInternetOK !== null && state.lastInternetOK && !internetOK) {
+    state.stats.internetDrops++;
+    await recordCellDrop(currentIdentity);
+    await addEvent("bad", "INTERNET DROP while cell=" + ck);
+  }
+  if (currentIdentity && state.lastInternetOK !== null && !state.lastInternetOK && internetOK) {
+    await addEvent("good", "INTERNET RECOVERED while cell=" + ck);
+  }
+  state.lastInternetOK = internetOK;
+
+  const [cellLabel, cellClass] = cellStatus(signal);
+  state.lastSnapshot = { signal, netMode, info, internetOK, routerOK, modemApiOK: true, cellLabel, cellClass, ts, enabledBands: bandsFromMask(netMode.LTEBand) };
+
+  await dbAdd("samples", {
+    ts,
+    sinr: num(signal.sinr),
+    rsrp: num(signal.rsrp),
+    rsrq: num(signal.rsrq),
+    rssi: num(signal.rssi),
+    band: signal.band,
+    pci: signal.pci,
+    enodeb: signal.enodeb_id,
+    earfcn: signal.earfcn,
+    cell: ck,
+    cellIdentity: currentIdentity,
+    internetOK,
+    routerOK
+  });
+
+  state.stats.samples++;
+  state.lastError = null;
   await save();
 }
 
@@ -313,50 +635,78 @@ async function lockBands(bands) {
     NetworkBand: cur.NetworkBand || DEFAULT_MODE.NetworkBand,
     LTEBand: mask
   });
-  await addEvent("action", `LOCK ${bands.join("+")}: LTEBand=${mask}`);
+  await addEvent("user", "Band lock applied: " + bands.join("+") + " LTEBand=" + mask);
   await save();
 }
 async function restoreDefault() {
   await postNetMode(DEFAULT_MODE);
-  await addEvent("action", `RESTORE DEFAULT: LTEBand=${DEFAULT_MODE.LTEBand}`);
+  await addEvent("user", "Restore default band: LTEBand=" + DEFAULT_MODE.LTEBand);
   await save();
 }
 async function restoreStartupBand() {
   if (!state.backup) throw new Error("Startup band was not captured yet");
   await postNetMode(state.backup);
-  await addEvent("action", `RESTORE STARTUP BAND: LTEBand=${state.backup.LTEBand}`);
+  await addEvent("user", "Restore startup band: LTEBand=" + state.backup.LTEBand);
   await save();
+}
+async function setMonitoring(enabled) {
+  const next = enabled === true;
+  const changed = state.monitoringEnabled !== next;
+  state.monitoringEnabled = next;
+  await chrome.storage.local.set({ monitoringEnabled: next });
+  if (next) {
+    ensureCollectAlarm();
+    if (changed) await addEvent("user", "Monitoring enabled");
+  } else {
+    chrome.alarms.clear(COLLECT_ALARM);
+    if (changed) await addEvent("user", "Monitoring disabled");
+  }
+  await save();
+}
+async function markUserAction(action) {
+  const allowed = new Map([
+    ["routerReboot", "Router reboot"],
+    ["modemReconnect", "Modem reconnect"]
+  ]);
+  const label = allowed.get(action);
+  if (!label) throw new Error("Unknown user action: " + action);
+  await addEvent("user", label);
 }
 async function clearHistory() {
   await dbClearAll();
-  state.stats = { bandChanges: 0, cellChanges: 0, internetDrops: 0, samples: 0 };
+  state.stats = defaultStats();
   state.startedAt = Date.now();
   state.lastCell = null;
+  state.lastCellIdentity = null;
+  state.lastSampleTs = null;
+  state.lastSuccessfulSampleTs = null;
+  state.lastWatchdogRestartTs = null;
   state.lastInternetOK = null;
   await save();
 }
 async function getFullState() {
   const history = await dbGetRecent("samples", MAX_HISTORY_POINTS_FOR_UI);
   const events = await dbGetRecent("events", MAX_EVENTS_FOR_UI);
-  return { ...state, history, events, bandMasks: BAND_MASKS, defaultMode: DEFAULT_MODE };
+  const cellStatistics = await getCellStatistics();
+  return { ...state, monitoringStatus: monitoringStatus(), history, events, cellStatistics, bandMasks: BAND_MASKS, defaultMode: DEFAULT_MODE };
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
   await load();
-  chrome.alarms.create("collect", { periodInMinutes: 0.5 }); // Chrome MV3 reliable minimum is about 30 sec
+  if (state.monitoringEnabled) ensureCollectAlarm();
   await addEvent("info", "Extension installed/updated. Background collector started.");
-  await collect();
+  await monitorTick();
 });
 chrome.runtime.onStartup.addListener(async () => {
   await load();
-  chrome.alarms.create("collect", { periodInMinutes: 0.5 }); // Chrome MV3 reliable minimum is about 30 sec
+  if (state.monitoringEnabled) ensureCollectAlarm();
   await addEvent("info", "Browser startup. Background collector started.");
-  await collect();
+  await monitorTick();
 });
 chrome.alarms.onAlarm.addListener(async alarm => {
-  if (alarm.name === "collect") {
+  if (alarm.name === COLLECT_ALARM) {
     await load();
-    await collect();
+    await monitorTick();
   }
 });
 
@@ -364,8 +714,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     await load();
     if (msg.type === "getState") return await getFullState();
-    if (msg.type === "refreshNow") { await collect(); return await getFullState(); }
+    if (msg.type === "refreshNow") { await monitorTick(); return await getFullState(); }
     if (msg.type === "setUrls") { await setUrls(msg); return await getFullState(); }
+    if (msg.type === "setMonitoring") { await setMonitoring(msg.enabled); return await getFullState(); }
+    if (msg.type === "markUserAction") { await markUserAction(msg.action); return await getFullState(); }
     if (msg.type === "lockBands") { await lockBands(msg.bands); return await getFullState(); }
     if (msg.type === "restoreDefault") { await restoreDefault(); return await getFullState(); }
     if (msg.type === "restoreStartupBand" || msg.type === "restoreBackup") { await restoreStartupBand(); return await getFullState(); }

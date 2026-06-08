@@ -9,7 +9,7 @@ nav{display:flex;background:#0d1117;border-bottom:1px solid #30363d}
 .tab{flex:1;border-radius:0;background:#0d1117;border:0;border-right:1px solid #30363d;color:#8b949e}
 .tab.active{color:#fff;background:#1f2937}
 main{padding:14px;display:grid;gap:12px}
-.tabPage{display:none}.tabPage.active{display:grid;gap:12px}
+.tabPage{display:none}.tabPage.active{display:grid;gap:12px}#statusData{display:grid;gap:12px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:13px}
 .row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #21262d;padding:6px 0}
@@ -29,6 +29,11 @@ canvas{width:100%;height:220px;background:#0d1117;border:1px solid #30363d;borde
 .bands{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .bandItem{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:9px;display:flex;gap:8px;align-items:center}
 .bandItem input{width:auto}
+#settings .bands{grid-template-columns:repeat(2,1fr);gap:8px}
+#settings .bandItem{min-height:34px;padding:6px 9px;border-radius:8px;font-size:13px}
+#settings .bandItem input{width:14px;height:14px;margin:0}
+#settings .actions{gap:7px;margin-top:9px}
+#settings .actions button{padding:7px 10px;border-radius:8px;font-size:13px;line-height:1.15}
 @media(max-width:860px){body{width:100vw}.grid{grid-template-columns:1fr}.bands{grid-template-columns:repeat(2,1fr)}}
 
 .fieldLabel{display:block;color:#8b949e;font-size:12px;margin:10px 0 4px} #settings input{display:block;width:100%;max-width:420px;margin-bottom:6px}
@@ -37,6 +42,14 @@ canvas{width:100%;height:220px;background:#0d1117;border:1px solid #30363d;borde
 
 #servingCell{margin-top:10px}.badge.muted{background:#8b949e22}
 
-.helpList{display:grid;gap:8px;color:#c9d1d9}
-.helpList code{background:#0d1117;border:1px solid #30363d;border-radius:5px;padding:1px 5px}
 #recommendation .badge{margin-bottom:6px}
+
+.tableWrap{overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:10px}
+.cellStatsTable{width:100%;border-collapse:collapse;min-width:760px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.cellStatsTable th,.cellStatsTable td{padding:8px 9px;border-bottom:1px solid #21262d;text-align:right;white-space:nowrap}
+.cellStatsTable th:first-child,.cellStatsTable td:first-child{text-align:left}
+.cellStatsTable th{color:#8b949e;font-weight:700;background:#161b22;position:sticky;top:0}
+.cellStatsTable tbody tr:last-child td{border-bottom:0}
+.emptyCellStats{text-align:center!important;color:#8b949e;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+.monitoringTop{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}
+.monitoringCard .row:last-child{border-bottom:0}
