@@ -18,28 +18,39 @@
   <nav>
     <button class="tab active" data-tab="status">Status</button>
     <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="cellStats">Cell Statistics</button>
     <button class="tab" data-tab="settings">Band lock</button>
-    <button class="tab" data-tab="about">Help</button>
   </nav>
 
   <main>
     <section id="status" class="tabPage active">
-      <div class="card">
-        <h2>Serving cell</h2>
-        <div id="cellBadge" class="badge muted">loading...</div>
-        <div id="servingCell"></div>
-        <p class="hint">This is the current serving LTE cell. It is not automatically “good” or “bad”. Use drops, SINR and your own observations.</p>
+      <div class="card monitoringCard">
+        <h2>Monitoring</h2>
+        <div class="monitoringTop">
+          <div id="monitoringBadge" class="badge muted">loading...</div>
+          <button id="monitoringToggle" class="secondary" type="button">ON</button>
+        </div>
+        <div id="monitoringDetails"></div>
       </div>
 
-      <div class="grid">
-        <div class="card"><h2>Radio</h2><div id="radio"></div></div>
-        <div class="card"><h2>Signal</h2><div id="signal"></div></div>
-        <div class="card"><h2>Checks</h2><div id="checks"></div></div>
-      </div>
+      <div id="statusData">
+        <div class="card">
+          <h2>Serving cell</h2>
+          <div id="cellBadge" class="badge muted">loading...</div>
+          <div id="servingCell"></div>
+          <p class="hint">This is the current serving LTE cell. It is not automatically “good” or “bad”. Use drops, SINR and your own observations.</p>
+        </div>
 
-      <div class="card"><h2>Band configuration</h2><div id="netMode"></div><p id="backupWarning" class="hint"></p></div>
-      <div class="card"><h2>Recommendation</h2><div id="recommendation"></div></div>
-      <p id="message" class="hint"></p>
+        <div class="grid">
+          <div class="card"><h2>Radio</h2><div id="radio"></div></div>
+          <div class="card"><h2>Signal</h2><div id="signal"></div></div>
+          <div class="card"><h2>Checks</h2><div id="checks"></div></div>
+        </div>
+
+        <div class="card"><h2>Band configuration</h2><div id="netMode"></div><p id="backupWarning" class="hint"></p></div>
+        <div class="card"><h2>Recommendation</h2><div id="recommendation"></div></div>
+        <p id="message" class="hint"></p>
+      </div>
     </section>
 
     <section id="history" class="tabPage">
@@ -57,6 +68,31 @@
         </div>
       </div>
       <div class="card"><h2>Events</h2><pre id="events">no events</pre></div>
+    </section>
+
+    <section id="cellStats" class="tabPage">
+      <div class="card">
+        <h2>Cell Statistics</h2>
+        <div class="tableWrap">
+          <table class="cellStatsTable">
+            <thead>
+              <tr>
+                <th>Cell</th>
+                <th>Time</th>
+                <th>Avg SINR</th>
+                <th>Avg RSRP</th>
+                <th>Avg RSRQ</th>
+                <th>Drops</th>
+                <th>Selections</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="cellStatsBody">
+              <tr><td colspan="8" class="emptyCellStats">no cell statistics yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <section id="settings" class="tabPage">
@@ -95,29 +131,14 @@
         <div class="actions">
           <button id="saveUrlBtn" class="secondary">Save settings</button>
         </div>
+        <div class="actions">
+          <button id="markRouterRebootBtn" class="secondary">Mark router reboot</button>
+          <button id="markModemReconnectBtn" class="secondary">Mark modem reconnect</button>
+        </div>
         <p class="hint">Router check is HTTP/fetch availability, not ICMP ping.</p>
       </div>
     </section>
 
-    <section id="about" class="tabPage">
-      <div class="card">
-        <h2>What this extension does</h2>
-        <p class="hint">It reads Huawei HiLink API from your modem, stores long-term history in IndexedDB, and can change LTE band masks.</p>
-        <div class="helpList">
-          <div><b>Serving cell</b> — current LTE cell: Band / PCI / eNodeB / EARFCN.</div>
-          <div><b>Current bands</b> — bands currently allowed by modem configuration.</div>
-          <div><b>Startup band</b> — configuration captured when the extension first saw the modem.</div>
-          <div><b>Default band</b> — built-in factory/default mask from net-mode-backup.xml: <code>a0080800c5</code>.</div>
-          <div><b>Internet drops</b> — moments when internet check failed while the extension was collecting data.</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Safety notes</h2>
-        <p class="hint">Changing bands can temporarily disconnect the modem. If the modem disappears, unplug/replug it and use Restore default band.</p>
-        <p class="hint">For B3+B7 the mask is <code>44</code>. For B7 only the mask is <code>40</code>.</p>
-      </div>
-    </section>
   </main>
 
   <script src="popup.js"></script>
