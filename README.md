@@ -11,10 +11,13 @@ Compatible with Chromium-based browsers, including Google Chrome, Yandex Browser
 * Serving cell monitoring (Band, PCI, eNodeB, EARFCN)
 * LTE band lock management
 * Support for B1, B3, B7, B8, B20, B28, B38 and B40
-* Cell change detection
-* Band change detection
+* Band, PCI, eNodeB and EARFCN change detection
+* Invalid modem sample detection
 * Internet drop detection
 * Long-term history storage using IndexedDB
+* Per-cell statistics grouped by Band, PCI and eNodeB
+* Monitoring ON/OFF control
+* Watchdog recovery counter
 * SINR history chart
 * Startup band restore
 * Default band restore
@@ -59,6 +62,16 @@ After installation, open the extension popup to:
 * Lock LTE bands
 * Restore startup or default LTE band configuration
 * Export monitoring history
+
+## Monitoring and diagnostics
+
+The Status tab shows live modem data only while Monitoring is enabled. If Monitoring is disabled, the Status tab hides live radio data and leaves only the Monitoring control available. History, Cell Statistics and Band lock settings remain available.
+
+Cell Statistics groups LTE cells by Band + PCI + eNodeB. EARFCN is intentionally excluded, so the same cell remains grouped when only EARFCN changes.
+
+The event log distinguishes band, PCI, eNodeB and EARFCN changes. Incomplete modem responses are logged as invalid modem samples and are not counted as cell or band changes.
+
+The extension records user markers for router reboot and modem reconnect so manual actions can be separated from network issues in exported logs.
 
 ## Notes
 

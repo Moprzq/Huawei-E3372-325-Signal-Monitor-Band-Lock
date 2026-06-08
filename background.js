@@ -185,6 +185,11 @@ async function load() {
   delete state.monitoringPaused;
   delete state.autoPauseUnavailable;
   delete state.modemUnavailableSince;
+  if (!state.monitoringEnabled) {
+    state.lastSnapshot = null;
+    state.lastError = null;
+    state.lastInternetOK = null;
+  }
   if (data.modemUrl) state.modem = data.modemUrl;
   if (data.routerUrl) state.router = data.routerUrl;
   if (data.internetCheckUrl) state.internetCheck = data.internetCheckUrl;
@@ -274,11 +279,6 @@ function parseEarfcn(earfcn) {
     dl: (text.match(/\bDL\s*:\s*([^\s]+)/i) || [])[1] || "",
     ul: (text.match(/\bUL\s*:\s*([^\s]+)/i) || [])[1] || ""
   };
-}
-function formatEarfcn(earfcn) {
-  const parsed = parseEarfcn(earfcn);
-  if (parsed.dl || parsed.ul) return `DL:${parsed.dl || "—"} UL:${parsed.ul || "—"}`;
-  return String(earfcn || "—");
 }
 function formatEarfcnChange(oldCell, newCell) {
   const oldEarfcn = parseEarfcn(oldCell.earfcn);
@@ -465,10 +465,6 @@ async function restartMonitoringByWatchdog(ts) {
   state.lastWatchdogRestartTs = ts;
   chrome.alarms.clear(COLLECT_ALARM, ensureCollectAlarm);
   await addEvent("info", "Monitoring restarted by watchdog");
-}
-async function handleCollectFailure(ts, message) {
-  state.lastError = message;
-  await addEvent("error", message);
 }
 async function monitorTick() {
   if (!state.monitoringEnabled) return;
@@ -659,6 +655,9 @@ async function setMonitoring(enabled) {
     if (changed) await addEvent("user", "Monitoring enabled");
   } else {
     chrome.alarms.clear(COLLECT_ALARM);
+    state.lastSnapshot = null;
+    state.lastError = null;
+    state.lastInternetOK = null;
     if (changed) await addEvent("user", "Monitoring disabled");
   }
   await save();

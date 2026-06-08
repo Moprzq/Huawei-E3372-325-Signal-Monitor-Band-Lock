@@ -123,7 +123,7 @@ async function refresh(now=false, manual=false) {
   } catch(e) {
     msg("Error: " + e.message, "bad");
   } finally {
-    if (manual) refreshBtn.disabled = false;
+    if (manual) refreshBtn.disabled = !localMonitoringEnabled(latestState);
   }
 }
 function render(state) {
@@ -133,6 +133,7 @@ function render(state) {
   renderBandCheckboxes(state);
   renderMonitoring(state);
   const monitoringEnabled = pendingMonitoringEnabled !== null ? pendingMonitoringEnabled : state.monitoringEnabled !== false;
+  document.getElementById("refreshBtn").disabled = !monitoringEnabled;
   const statusData = document.getElementById("statusData");
   if (statusData) statusData.style.display = monitoringEnabled ? "grid" : "none";
   if (!monitoringEnabled) {

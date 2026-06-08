@@ -9,7 +9,9 @@ nav{display:flex;background:#0d1117;border-bottom:1px solid #30363d}
 .tab{flex:1;border-radius:0;background:#0d1117;border:0;border-right:1px solid #30363d;color:#8b949e}
 .tab.active{color:#fff;background:#1f2937}
 main{padding:14px;display:grid;gap:12px}
-.tabPage{display:none}.tabPage.active{display:grid;gap:12px}#statusData{display:grid;gap:12px}
+.tabPage{display:none}
+.tabPage.active{display:grid;gap:12px}
+#statusData{display:grid;gap:12px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:13px}
 .row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #21262d;padding:6px 0}
