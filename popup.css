@@ -6,6 +6,7 @@ h1{margin:0;font-size:18px} h2{margin:0 0 10px;font-size:15px} p{margin:8px 0 0}
 #subtitle,.hint{color:#8b949e;font-size:12px}
 #refreshBtn{width:40px;height:36px;font-size:18px}
 nav{display:flex;background:#0d1117;border-bottom:1px solid #30363d}
+#message{min-height:18px;margin:0;padding:8px 14px;border-bottom:1px solid #21262d}
 .tab{flex:1;border-radius:0;background:#0d1117;border:0;border-right:1px solid #30363d;color:#8b949e}
 .tab.active{color:#fff;background:#1f2937}
 main{padding:14px;display:grid;gap:12px}
@@ -27,7 +28,13 @@ button:disabled{opacity:.55;cursor:wait}
 .actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:10px}
 input{width:260px}
 pre{margin:0;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px;white-space:pre-wrap;max-height:210px;overflow:auto;font-size:12px}
-canvas{width:100%;height:220px;background:#0d1117;border:1px solid #30363d;border-radius:10px}
+canvas{width:100%;height:170px;background:#0d1117;border:1px solid #30363d;border-radius:10px}
+.chartStack{display:grid;gap:10px;position:relative}
+.chartPanel{display:grid;gap:5px}
+.chartTitle{display:flex;justify-content:space-between;gap:8px;color:#8b949e;font-size:12px;font-weight:700}
+.chartTitle b{color:#e6edf3}
+.chartTooltip{display:none;position:fixed;z-index:20;pointer-events:none;background:#161b22;border:1px solid #484f58;border-radius:8px;padding:7px 9px;color:#e6edf3;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;box-shadow:0 8px 24px #0008}
+.chartTooltip.visible{display:block}
 .bands{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .bandItem{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:9px;display:flex;gap:8px;align-items:center}
 .bandItem input{width:auto}
@@ -36,15 +43,16 @@ canvas{width:100%;height:220px;background:#0d1117;border:1px solid #30363d;borde
 #settings .bandItem input{width:14px;height:14px;margin:0}
 #settings .actions{gap:7px;margin-top:9px}
 #settings .actions button{padding:7px 10px;border-radius:8px;font-size:13px;line-height:1.15}
+#connections input{display:block;width:100%;max-width:520px;margin-bottom:6px}
+.saveStatus{font-size:12px;font-weight:700}
 @media(max-width:860px){body{width:100vw}.grid{grid-template-columns:1fr}.bands{grid-template-columns:repeat(2,1fr)}}
 
-.fieldLabel{display:block;color:#8b949e;font-size:12px;margin:10px 0 4px} #settings input{display:block;width:100%;max-width:420px;margin-bottom:6px}
+.fieldLabel{display:block;color:#8b949e;font-size:12px;margin:10px 0 4px}
 
 #history .grid{grid-template-columns:repeat(3,1fr)} @media(max-width:860px){#history .grid{grid-template-columns:1fr}}
 
-#servingCell{margin-top:10px}.badge.muted{background:#8b949e22}
+#cellBadge{margin-bottom:10px}.badge.muted{background:#8b949e22}
 
-#recommendation .badge{margin-bottom:6px}
 
 .tableWrap{overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:10px}
 .cellStatsTable{width:100%;border-collapse:collapse;min-width:760px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}

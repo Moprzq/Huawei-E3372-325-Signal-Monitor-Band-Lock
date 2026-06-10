@@ -4,8 +4,11 @@ const row = (k,v,c="") => `<div class="row"><span class="k">${k}</span><span cla
 let latestState = null;
 let pendingMonitoringEnabled = null;
 let monitoringToggleRequestId = 0;
+let refreshInFlight = false;
 const MONITORING_OVERRIDE_KEY = "lteMonitoringEnabled";
 const popupOpenedAt = Date.now();
+const connectionFieldIds = ["modemUrl", "routerUrl", "internetCheckUrl"];
+const dirtyConnectionFields = new Set();
 
 function localMonitoringEnabled(state) {
   const value = localStorage.getItem(MONITORING_OVERRIDE_KEY);
@@ -92,6 +95,25 @@ function formatCellLabel(cell) {
   if (parts.length < 3) return cell || "—";
   return parts[0] + " / PCI" + parts[1] + " / eNB" + parts[2];
 }
+function setInputValueIfIdle(id, value) {
+  const input = $(id);
+  if (!input || document.activeElement === input || dirtyConnectionFields.has(id)) return;
+  input.value = value;
+}
+function renderConnectionSettings(state) {
+  setInputValueIfIdle("modemUrl", state.modem || "http://192.168.8.1");
+  setInputValueIfIdle("routerUrl", state.router || "http://192.168.1.1");
+  setInputValueIfIdle("internetCheckUrl", state.internetCheck || "https://cloudflare-dns.com/dns-query");
+}
+function setConnectionSaveStatus(text, cls="muted") {
+  const el = $("connectionSaveStatus");
+  if (!el) return;
+  el.className = "saveStatus " + cls;
+  el.textContent = text;
+}
+function clearConnectionDirtyState() {
+  dirtyConnectionFields.clear();
+}
 function renderMonitoring(state) {
   const effectiveMonitoringEnabled = pendingMonitoringEnabled !== null ? pendingMonitoringEnabled : localMonitoringEnabled(state);
   const status = effectiveMonitoringEnabled ? "Active" : "Disabled";
@@ -110,7 +132,9 @@ function renderMonitoring(state) {
 }
 
 async function refresh(now=false, manual=false) {
+  if (refreshInFlight) return;
   if (!manual && !localMonitoringEnabled(latestState)) return;
+  refreshInFlight = true;
   const requestId = monitoringToggleRequestId;
   const refreshBtn = document.getElementById("refreshBtn");
   if (manual) refreshBtn.disabled = true;
@@ -123,13 +147,12 @@ async function refresh(now=false, manual=false) {
   } catch(e) {
     msg("Error: " + e.message, "bad");
   } finally {
+    refreshInFlight = false;
     if (manual) refreshBtn.disabled = !localMonitoringEnabled(latestState);
   }
 }
 function render(state) {
-  $("modemUrl").value = state.modem || "http://192.168.8.1";
-  $("routerUrl").value = state.router || "http://192.168.1.1";
-  $("internetCheckUrl").value = state.internetCheck || "https://cloudflare-dns.com/dns-query";
+  renderConnectionSettings(state);
   renderBandCheckboxes(state);
   renderMonitoring(state);
   const monitoringEnabled = pendingMonitoringEnabled !== null ? pendingMonitoringEnabled : state.monitoringEnabled !== false;
@@ -138,6 +161,7 @@ function render(state) {
   if (statusData) statusData.style.display = monitoringEnabled ? "grid" : "none";
   if (!monitoringEnabled) {
     document.getElementById("subtitle").textContent = state.modem + " · monitoring disabled";
+    renderDisabledChecks();
     renderStats(state);
     renderCellStatistics(state);
     renderEvents(state);
@@ -162,12 +186,6 @@ function render(state) {
   document.getElementById("subtitle").textContent = state.modem + " · " + (modemApiOK ? (i.DeviceName || "Huawei HiLink") : "modem unavailable") + " · last " + new Date(snap.ts).toLocaleTimeString();
   $("cellBadge").className = "badge " + (modemApiOK ? "muted" : "bad");
   $("cellBadge").textContent = modemApiOK ? "CURRENT CELL" : "MODEM UNAVAILABLE";
-  $("servingCell").innerHTML =
-    row("Band", s.band ? "B" + s.band : "—")+
-    row("PCI", s.pci || "—")+
-    row("eNodeB", s.enodeb_id || "—")+
-    row("EARFCN", s.earfcn || "—");
-
   $("radio").innerHTML =
     row("Band",s.band ? "B" + s.band : "—")+row("PCI",s.pci || "—")+row("eNodeB",s.enodeb_id || "—")+row("EARFCN",s.earfcn || "—")+
     row("Cell ID",s.cell_id || "—")+row("TAC",s.tac || "—")+row("DL/UL BW",(s.dlbandwidth||"—")+" / "+(s.ulbandwidth||"—"))+row("Mode",s.transmode || "—");
@@ -216,14 +234,16 @@ function render(state) {
     ? "⚠ Startup band equals current LTEBand. Restore startup band will not change the current band configuration. Use Restore default band if you need the default multi-band mask."
     : "";
 
-  $("recommendation").innerHTML = buildRecommendation(state, snap, enabledBands);
 
   renderStats(state);
   renderCellStatistics(state);
   renderEvents(state);
   drawChart(state);
   updateMaskPreview();
-  if (!modemApiOK) msg("Modem API unavailable. Internet check is still running.", "warn");
+  if (!modemApiOK) {
+    const modemError = snap.modemError || state.lastError;
+    msg(modemError ? "Modem API unavailable: " + modemError + ". Internet check is still running." : "Modem API unavailable. Waiting for next modem response.", "warn");
+  }
   else if (state.lastError) msg("Last background error: " + state.lastError, "warn");
   else msg("OK " + new Date().toLocaleTimeString(), "good");
 }
@@ -250,6 +270,16 @@ function updateMaskPreview() {
     return;
   }
   $("maskPreview").textContent = `Selected: ${bands.join("+")} → LTEBand=${maskForBands(bands, latestState.bandMasks)}`;
+}
+function renderDisabledChecks() {
+  const root = document.getElementById("checks");
+  if (!root) return;
+  root.innerHTML =
+    row("Router", "monitoring disabled", "muted")+
+    row("Internet", "monitoring disabled", "muted")+
+    row("Modem API", "monitoring disabled", "muted")+
+    row("WAN IPv4", "—")+
+    row("Modem uptime", "—");
 }
 function renderStats(state) {
   const history = state.history || [];
@@ -424,57 +454,123 @@ function formatDuration(seconds) {
   parts.push(`${seconds}s`);
   return parts.join(" ");
 }
-const fmt = formatDuration;
-function drawChart(state) {
-  const c = $("sinrChart"), ctx = c.getContext("2d");
-  ctx.clearRect(0,0,c.width,c.height);
-  ctx.strokeStyle="#30363d"; ctx.lineWidth=1;
-  for(let i=0;i<5;i++){ const y=22+i*42; ctx.beginPath(); ctx.moveTo(40,y); ctx.lineTo(c.width-20,y); ctx.stroke(); }
-  ctx.fillStyle="#8b949e"; ctx.font="13px monospace"; ctx.fillText("SINR",8,18);
-  const data = (state.history || []).slice(-180);
-  if(data.length < 2) return;
-  const min=-5,max=25;
-  const xFor=i=>40+i*(c.width-65)/(data.length-1);
-  const yFor=v=>c.height-24-((Math.max(min,Math.min(max,v))-min)/(max-min))*(c.height-50);
-  ctx.strokeStyle="#3fb950"; ctx.lineWidth=2.5; ctx.beginPath();
-  data.forEach((p,i)=>{ const x=xFor(i), y=yFor(p.sinr); if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); });
-  ctx.stroke();
-  ctx.fillStyle="#f85149";
-  data.forEach((p,i)=>{ if(!p.internetOK){ const x=xFor(i); ctx.fillRect(x-1, 8, 2, c.height-18); } });
+function chartMetrics() {
+  return [
+    { key: "sinr", label: "SINR", unit: "dB", color: "#3fb950", min: -5, max: 30 },
+    { key: "rsrp", label: "RSRP", unit: "dBm", color: "#58a6ff", min: -125, max: -75 },
+    { key: "rsrq", label: "RSRQ", unit: "dB", color: "#d29922", min: -20, max: -3 }
+  ];
 }
-function buildRecommendation(state, snap, enabledBands) {
-  const drops = state.stats?.internetDrops || 0;
-  const bandChanges = state.stats?.bandChanges || 0;
-  const internetOK = !!snap.internetOK;
-  const sinr = snap.signal?.sinr || "—";
+function drawChart(state) {
+  const root = document.getElementById("radioCharts");
+  if (!root) return;
+  const data = (state.history || []).slice(-180);
+  const metrics = chartMetrics();
+  root.innerHTML = metrics.map(metric =>
+    "<div class=\"chartPanel\"><div class=\"chartTitle\"><b>" + metric.label + "</b><span>" + metric.min + " to " + metric.max + " " + metric.unit + "</span></div><canvas id=\"chart_" + metric.key + "\" width=\"760\" height=\"170\"></canvas></div>"
+  ).join("");
+  for (const metric of metrics) drawMetricChart(metric, data);
+}
+function drawMetricChart(metric, data, highlightIndex = null, attachEvents = true) {
+  const canvas = document.getElementById("chart_" + metric.key);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const plot = { left: 52, right: 16, top: 14, bottom: 24 };
+  const width = canvas.width - plot.left - plot.right;
+  const height = canvas.height - plot.top - plot.bottom;
 
-  let cls = "muted";
-  let title = "Observe";
-  let text = "Keep collecting data. Use history to compare drops before and after band changes.";
+  const xFor = i => plot.left + i * width / Math.max(1, data.length - 1);
+  const yFor = value => {
+    const clamped = Math.max(metric.min, Math.min(metric.max, value));
+    return plot.top + height - ((clamped - metric.min) / (metric.max - metric.min)) * height;
+  };
 
-  if (!internetOK) {
-    cls = "bad";
-    title = "Internet check is down";
-    text = snap.modemApiOK === false
-      ? "Internet check is down and Huawei modem API is unavailable from this network."
-      : "If Modem API is OK but internet is down, the issue is after the modem: LTE session, base station, or operator network.";
-  } else if (enabledBands.length === 1 && enabledBands[0] === "B7" && drops === 0) {
-    cls = "good";
-    title = "B7 lock looks stable";
-    text = `Current config is B7 only, internet is OK, SINR is ${sinr}. Keep this for a longer observation period.`;
-  } else if (bandChanges > 0 || drops > 0) {
-    cls = "warn";
-    title = "Instability detected";
-    text = `Band changes: ${bandChanges}, Internet drops: ${drops}. Consider locking known stable bands and comparing history.`;
-  } else if (enabledBands.length > 1) {
-    cls = "warn";
-    title = "Multi-band mode";
-    text = "The modem may switch bands automatically. This is normal, but can be unstable in some locations.";
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#30363d";
+  ctx.fillStyle = "#8b949e";
+  ctx.font = "11px monospace";
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i <= 4; i++) {
+    const value = metric.max - i * (metric.max - metric.min) / 4;
+    const y = plot.top + i * height / 4;
+    ctx.beginPath();
+    ctx.moveTo(plot.left, y);
+    ctx.lineTo(plot.left + width, y);
+    ctx.stroke();
+    ctx.fillText(String(Math.round(value)), 8, y + 4);
   }
 
-  return `<div class="badge ${cls}">${title}</div><p class="hint">${text}</p>`;
-}
+  if (data.length < 2) {
+    ctx.fillText("Waiting for samples", plot.left, plot.top + 18);
+    return;
+  }
 
+  ctx.strokeStyle = metric.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let started = false;
+  data.forEach((point, i) => {
+    const value = point[metric.key];
+    if (!Number.isFinite(value)) return;
+    const x = xFor(i);
+    const y = yFor(value);
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  if (started) ctx.stroke();
+
+  ctx.fillStyle = "#f85149";
+  data.forEach((point, i) => {
+    if (!point.internetOK) {
+      const x = xFor(i);
+      ctx.fillRect(x - 1, plot.top, 2, height);
+    }
+  });
+
+  if (highlightIndex !== null) {
+    const point = data[highlightIndex];
+    const value = point?.[metric.key];
+    if (Number.isFinite(value)) {
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(xFor(highlightIndex), yFor(value), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (attachEvents) {
+    canvas.addEventListener("mousemove", event => showChartTooltip(event, canvas, metric, data, plot, xFor, yFor));
+    canvas.addEventListener("mouseleave", () => { hideChartTooltip(); drawMetricChart(metric, data, null, false); });
+  }
+}
+function showChartTooltip(event, canvas, metric, data, plot, xFor, yFor) {
+  if (data.length < 2) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const x = (event.clientX - rect.left) * scaleX;
+  const index = Math.max(0, Math.min(data.length - 1, Math.round((x - plot.left) / ((canvas.width - plot.left - plot.right) / Math.max(1, data.length - 1)))));
+  const point = data[index];
+  const value = point?.[metric.key];
+  if (!Number.isFinite(value)) return;
+
+  drawMetricChart(metric, data, index, false);
+
+  const tooltip = document.getElementById("chartTooltip");
+  if (!tooltip) return;
+  tooltip.classList.add("visible");
+  tooltip.style.left = event.clientX + 12 + "px";
+  tooltip.style.top = event.clientY + 12 + "px";
+  tooltip.innerHTML = metric.label + ": " + value.toFixed(1) + " " + metric.unit + "<br>" + new Date(point.ts).toLocaleTimeString() + "<br>Internet: " + (point.internetOK ? "OK" : "DOWN");
+}
+function hideChartTooltip() {
+  const tooltip = document.getElementById("chartTooltip");
+  if (tooltip) tooltip.classList.remove("visible");
+}
 async function lockBands(bands) {
   try {
     if (!bands.length) throw new Error("Select at least one band");
@@ -501,30 +597,47 @@ document.addEventListener("DOMContentLoaded", async () => {
     $(btn.dataset.tab).classList.add("active");
   }));
 
+  connectionFieldIds.forEach(id => {
+    const input = $(id);
+    if (input) input.addEventListener("input", () => {
+      dirtyConnectionFields.add(id);
+      setConnectionSaveStatus("Unsaved changes", "warn");
+    });
+  });
+
   document.getElementById("refreshBtn").addEventListener("click", () => refresh(true, true));
   $("lockSelectedBtn").addEventListener("click", () => lockBands(selectedBands()));
   $("quickB7Btn").addEventListener("click", () => lockBands(["B7"]));
   $("quickB3B7Btn").addEventListener("click", () => lockBands(["B3","B7"]));
   $("restoreStartupBtn").addEventListener("click", async () => {
     if (!confirm("Restore startup band?")) return;
-    try { render(withLocalMonitoringState(await send("restoreStartupBand"))); msg("Startup band sent.", "good"); } catch(e){ msg("Error: "+e.message,"bad"); }
+    try { latestState = withLocalMonitoringState(await send("restoreStartupBand")); render(latestState); msg("Startup band sent.", "good"); } catch(e){ msg("Error: "+e.message,"bad"); }
   });
   $("restoreDefaultBtn").addEventListener("click", async () => {
     if (!confirm("Restore default band mask a0080800c5?\n\nThe modem may reconnect.")) return;
-    try { render(withLocalMonitoringState(await send("restoreDefault"))); msg("Default band sent.", "good"); } catch(e){ msg("Error: "+e.message,"bad"); }
+    try { latestState = withLocalMonitoringState(await send("restoreDefault")); render(latestState); msg("Default band sent.", "good"); } catch(e){ msg("Error: "+e.message,"bad"); }
   });
   $("exportBtn").addEventListener("click", exportLogs);
   $("clearBtn").addEventListener("click", async () => {
     if (!confirm("Clear all IndexedDB history and events?")) return;
-    render(withLocalMonitoringState(await send("clearHistory"))); msg("History cleared.", "good");
+    latestState = withLocalMonitoringState(await send("clearHistory")); render(latestState); msg("History cleared.", "good");
   });
   $("saveUrlBtn").addEventListener("click", async () => {
-    render(withLocalMonitoringState(await send("setUrls", {
-      modem: $("modemUrl").value,
-      router: $("routerUrl").value,
-      internetCheck: $("internetCheckUrl").value
-    })));
-    msg("Connection settings saved.", "good");
+    try {
+      const st = await send("setUrls", {
+        modem: $("modemUrl").value,
+        router: $("routerUrl").value,
+        internetCheck: $("internetCheckUrl").value
+      });
+      clearConnectionDirtyState();
+      latestState = withLocalMonitoringState(st);
+      render(latestState);
+      setConnectionSaveStatus("Saved " + new Date().toLocaleTimeString(), "good");
+      msg("Connection settings saved.", "good");
+    } catch (e) {
+      setConnectionSaveStatus("Save failed", "bad");
+      msg("Error: " + e.message, "bad");
+    }
   });
   const monitoringToggle = document.getElementById("monitoringToggle");
   async function applyMonitoringToggle(enabled) {

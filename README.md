@@ -8,7 +8,7 @@ Compatible with Chromium-based browsers, including Google Chrome, Yandex Browser
 
 * Real-time LTE signal monitoring
 * SINR, RSRP, RSRQ and RSSI tracking
-* Serving cell monitoring (Band, PCI, eNodeB, EARFCN)
+* Radio and cell monitoring (Band, PCI, eNodeB, EARFCN)
 * LTE band lock management
 * Support for B1, B3, B7, B8, B20, B28, B38 and B40
 * Band, PCI, eNodeB and EARFCN change detection
@@ -18,11 +18,11 @@ Compatible with Chromium-based browsers, including Google Chrome, Yandex Browser
 * Per-cell statistics grouped by Band, PCI and eNodeB
 * Monitoring ON/OFF control
 * Watchdog recovery counter
-* SINR history chart
+* Separate SINR, RSRP and RSRQ history charts
 * Startup band restore
 * Default band restore
 * JSON export
-* Configurable modem address
+* Configurable modem, router and Internet check endpoints
 
 ## Browser Support
 
@@ -57,7 +57,7 @@ The extension communicates directly with the Huawei HiLink Web API, typically av
 After installation, open the extension popup to:
 
 * Monitor LTE signal quality
-* View serving cell information
+* View radio and LTE cell information
 * Track Internet drops and cell changes
 * Lock LTE bands
 * Restore startup or default LTE band configuration
@@ -91,15 +91,33 @@ Default LTE band mask:
 
 ### Status
 
+Monitoring state, signal values and current radio information.
+
 ![Status](screenshots/status.png)
 
 ### History
 
+Separate SINR, RSRP and RSRQ charts, event log and export controls.
+
 ![History](screenshots/history.png)
+
+### Cell Statistics
+
+Long-term per-cell statistics grouped by Band + PCI + eNodeB.
+
+![Cell Statistics](screenshots/cell-statistics.png)
 
 ### Band Lock
 
+Current band configuration, multi-band lock controls and restore actions.
+
 ![Band Lock](screenshots/band-lock.png)
+
+### Connection
+
+Router, Internet and Modem API checks plus configurable endpoints.
+
+![Connection](screenshots/connection.png)
 
 ## Keywords
 

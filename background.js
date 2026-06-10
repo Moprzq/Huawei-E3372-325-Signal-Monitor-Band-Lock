@@ -14,7 +14,10 @@ const MAX_HISTORY_POINTS_FOR_UI = 2000;
 const MAX_EVENTS_FOR_UI = 500;
 const MAX_CELL_SAMPLE_GAP_SECONDS = 300;
 const WATCHDOG_STALE_MS = 60 * 1000;
+const MODEM_UNAVAILABLE_RETRY_MS = 10 * 1000;
 const COLLECT_ALARM = "collect";
+
+let monitorTickInFlight = null;
 
 let state = {
   modem: DEFAULT_MODEM,
@@ -182,9 +185,6 @@ async function load() {
   if (data.lteState) state = { ...state, ...data.lteState };
   state.stats = { ...defaultStats(), ...(state.stats || {}) };
   state.monitoringEnabled = data.monitoringEnabled !== undefined ? data.monitoringEnabled !== false : state.monitoringEnabled !== false;
-  delete state.monitoringPaused;
-  delete state.autoPauseUnavailable;
-  delete state.modemUnavailableSince;
   if (!state.monitoringEnabled) {
     state.lastSnapshot = null;
     state.lastError = null;
@@ -198,9 +198,6 @@ async function load() {
 async function save() {
   const persistedState = { ...state };
   delete persistedState.monitoringEnabled;
-  delete persistedState.monitoringPaused;
-  delete persistedState.autoPauseUnavailable;
-  delete persistedState.modemUnavailableSince;
   await chrome.storage.local.set({
     lteState: persistedState,
     modemUrl: state.modem,
@@ -251,9 +248,6 @@ function isValidBand(x) {
 }
 function cellKey(s) {
   return `B${normalizeBand(s.band)}/${s.pci}/${s.enodeb_id}/${s.earfcn}`;
-}
-function cellStatus(s) {
-  return [`B${s.band || "—"} / PCI ${s.pci || "—"} / eNodeB ${s.enodeb_id || "—"}`, "muted"];
 }
 function parseCellKey(key) {
   const parts = String(key || "").split("/");
@@ -385,8 +379,71 @@ async function recordCellDrop(cell) {
   stat.drops = (stat.drops || 0) + 1;
   await dbPut("cellStats", stat);
 }
+function normalizeStoredCellIdentity(value) {
+  const parts = String(value || "").split("/");
+  if (parts.length < 3) return "";
+  const band = normalizeBand(parts[0]);
+  const pci = String(parts[1] || "").trim();
+  const enodeb = normENB(parts[2]);
+  if (!isValidBand(band) || !pci || !enodeb || enodeb === "0") return "";
+  return "B" + band + "/" + pci + "/" + enodeb;
+}
+function sampleCellIdentity(sample) {
+  return normalizeStoredCellIdentity(sample?.cellIdentity || sample?.cell);
+}
+function dropCellIdentity(event) {
+  const match = String(event?.msg || "").match(/cell=([^\n]+)/);
+  return normalizeStoredCellIdentity(match?.[1]);
+}
+async function rebuildCellStatisticsFromHistory() {
+  const samples = await dbGetRecent("samples", 1000000);
+  if (!samples.length) return [];
+
+  const byCell = new Map();
+  const statFor = (cell, ts) => {
+    if (!byCell.has(cell)) byCell.set(cell, emptyCellStat(cell, ts));
+    return byCell.get(cell);
+  };
+
+  let previous = null;
+  for (const sample of samples) {
+    const cell = sampleCellIdentity(sample);
+    if (!cell) {
+      previous = null;
+      continue;
+    }
+
+    if (previous?.cell === cell) {
+      const seconds = Math.max(0, (sample.ts - previous.ts) / 1000);
+      if (seconds <= MAX_CELL_SAMPLE_GAP_SECONDS) statFor(previous.cell, previous.ts).timeSeconds += seconds;
+    }
+
+    const stat = statFor(cell, sample.ts);
+    addMetric(stat, "sinr", sample.sinr);
+    addMetric(stat, "rsrp", sample.rsrp);
+    addMetric(stat, "rsrq", sample.rsrq);
+    if (!previous || previous.cell !== cell) stat.selections = (stat.selections || 0) + 1;
+    stat.lastSeen = sample.ts;
+    previous = { cell, ts: sample.ts };
+  }
+
+  const events = await dbGetRecent("events", 1000000);
+  for (const event of events) {
+    if (!String(event.msg || "").includes("INTERNET DROP")) continue;
+    const cell = dropCellIdentity(event);
+    if (cell) {
+      const stat = statFor(cell, event.ts);
+      stat.drops = (stat.drops || 0) + 1;
+    }
+  }
+
+  const rebuilt = [...byCell.values()];
+  for (const stat of rebuilt) await dbPut("cellStats", stat);
+  return rebuilt;
+}
 async function getCellStatistics() {
-  const stats = await dbGetAll("cellStats");
+  let stats = await dbGetAll("cellStats");
+  if (!stats.length) stats = await rebuildCellStatisticsFromHistory();
   return stats.map(statForExport).sort((a, b) => (b.timeSeconds || 0) - (a.timeSeconds || 0));
 }
 
@@ -466,7 +523,7 @@ async function restartMonitoringByWatchdog(ts) {
   chrome.alarms.clear(COLLECT_ALARM, ensureCollectAlarm);
   await addEvent("info", "Monitoring restarted by watchdog");
 }
-async function monitorTick() {
+async function runMonitorTick() {
   if (!state.monitoringEnabled) return;
   const ts = Date.now();
   const watchdogBase = state.lastSuccessfulSampleTs || state.startedAt;
@@ -475,6 +532,11 @@ async function monitorTick() {
     await restartMonitoringByWatchdog(ts);
   }
   await collect();
+}
+async function monitorTick() {
+  if (monitorTickInFlight) return monitorTickInFlight;
+  monitorTickInFlight = runMonitorTick().finally(() => { monitorTickInFlight = null; });
+  return monitorTickInFlight;
 }
 
 async function collect() {
@@ -497,12 +559,10 @@ async function collect() {
       routerOK: null,
       modemApiOK: false,
       modemError: e.message,
-      cellLabel: "Modem unavailable",
-      cellClass: "bad",
       ts,
       enabledBands: []
     };
-    state.lastError = null;
+    state.lastError = e.message;
     if (shouldLogError) await addEvent("info", "Modem API unavailable: " + e.message);
     await save();
     return;
@@ -585,8 +645,7 @@ async function collect() {
   }
   state.lastInternetOK = internetOK;
 
-  const [cellLabel, cellClass] = cellStatus(signal);
-  state.lastSnapshot = { signal, netMode, info, internetOK, routerOK, modemApiOK: true, cellLabel, cellClass, ts, enabledBands: bandsFromMask(netMode.LTEBand) };
+  state.lastSnapshot = { signal, netMode, info, internetOK, routerOK, modemApiOK: true, ts, enabledBands: bandsFromMask(netMode.LTEBand) };
 
   await dbAdd("samples", {
     ts,
@@ -610,9 +669,24 @@ async function collect() {
 }
 
 async function setUrls({ modem, router, internetCheck }) {
-  if (modem !== undefined) state.modem = String(modem || DEFAULT_MODEM).replace(/\/+$/, "");
+  const previousModem = state.modem;
+  const previousRouter = state.router;
+  const previousInternetCheck = state.internetCheck;
+
+  if (modem !== undefined) state.modem = normalizeURL(modem || DEFAULT_MODEM);
   if (router !== undefined) state.router = normalizeURL(router || DEFAULT_ROUTER);
   if (internetCheck !== undefined) state.internetCheck = normalizeURL(internetCheck || DEFAULT_INTERNET_CHECK);
+
+  const changed = previousModem !== state.modem || previousRouter !== state.router || previousInternetCheck !== state.internetCheck;
+  if (changed) {
+    state.lastSnapshot = null;
+    state.lastError = null;
+    state.lastInternetOK = null;
+    await save();
+    if (state.monitoringEnabled) await monitorTick();
+    return;
+  }
+
   await save();
 }
 function normalizeURL(value) {
@@ -653,6 +727,7 @@ async function setMonitoring(enabled) {
   if (next) {
     ensureCollectAlarm();
     if (changed) await addEvent("user", "Monitoring enabled");
+    await monitorTick();
   } else {
     chrome.alarms.clear(COLLECT_ALARM);
     state.lastSnapshot = null;
@@ -683,7 +758,23 @@ async function clearHistory() {
   state.lastInternetOK = null;
   await save();
 }
+async function refreshStaleMonitoringState() {
+  if (!state.monitoringEnabled) return;
+  ensureCollectAlarm();
+
+  const ts = Date.now();
+  const snapshotTs = state.lastSnapshot?.ts || 0;
+  const hasNoSnapshot = !state.lastSnapshot;
+  const hasLegacyUnavailableSnapshot = state.lastSnapshot?.modemApiOK === false && !state.lastSnapshot?.modemError && !state.lastError;
+  const unavailableIsStale = state.lastSnapshot?.modemApiOK === false && snapshotTs && ts - snapshotTs > MODEM_UNAVAILABLE_RETRY_MS;
+  const sampleIsStale = snapshotTs && ts - snapshotTs > WATCHDOG_STALE_MS;
+
+  if (hasNoSnapshot || hasLegacyUnavailableSnapshot || unavailableIsStale || sampleIsStale) {
+    await monitorTick();
+  }
+}
 async function getFullState() {
+  await refreshStaleMonitoringState();
   const history = await dbGetRecent("samples", MAX_HISTORY_POINTS_FOR_UI);
   const events = await dbGetRecent("events", MAX_EVENTS_FOR_UI);
   const cellStatistics = await getCellStatistics();
